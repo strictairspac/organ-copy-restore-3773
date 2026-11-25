@@ -22,17 +22,27 @@ CONFIG = {
 }
 
 
-def run(payload, parameter, db):
+def run(payload, parameter, db, on_progress=None):
+    def progress(stage, note=None, **info):
+        # Progress hooks are optional (direct domain callers/tests pass none).
+        if on_progress is not None:
+            on_progress(stage, note, **info)
+
     validate(payload)
+    progress("validated", "复原范围校验通过")
     source = create_tables(db, "source")
     write_source(db, source, payload)
     selected = payload["requested"][:parameter]
+    progress("source_loaded", "源卷与外键闭包已装载", selected=len(selected))
     segments = damage_segment(export_selection(db, source, selected), payload.get("simulate_damage"))
+    progress("exported", "COPY 段已导出并计算摘要", segments=len(segments))
     bad_segments = sum(not segment.verified() for segment in segments)
+    progress("verified", "逐段 SHA-256 核验完成", bad_segments=bad_segments)
     target = None
     if not bad_segments:
         target = create_tables(db, "target")
         apply_archive(db, target, segments)
+        progress("restored", "已按外键顺序还原到隔离表")
     rows = []
     restored_visits = 0
     for rel, segment in zip(RELATIONS, segments, strict=True):
@@ -48,6 +58,7 @@ def run(payload, parameter, db):
             "SHA-256": segment.digest,
             "核验": "确认" if digest_match else ("段受损" if not segment.verified() else "未导入"),
         })
+    progress("reverified", "目标表重新导出并对照摘要完成")
     summary = (
         f"归档校验失败（{bad_segments} 段），已阻断复原。"
         if bad_segments else f"已还原 {restored_visits} 张工单；目标外键和重新导出的字节摘要均已核验。"

@@ -6,10 +6,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.config.resources import cache, engine
-from src.services.execution import JobFailure, fail, service_one
+from src.services.execution import EXECUTOR_ID, JobFailure, fail, service_one
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
+logger.info("Worker executor identity: %s", EXECUTOR_ID)
 
 
 def check():
@@ -24,11 +25,14 @@ def work():
         try:
             cache.set("workbench:heartbeat", time.time(), ex=90)
             try:
-                if service_one():
+                if service_one(owner=EXECUTOR_ID):
                     continue
             except JobFailure as exc:
-                logger.exception("Execution %s failed", exc.run_id)
-                fail(exc)
+                logger.exception("Execution %s failed (attempt %s)", exc.run_id, exc.attempt)
+                outcome = fail(exc)
+                if outcome == "stale":
+                    # A newer attempt owns the batch; this late failure is ignored.
+                    logger.info("Late failure from attempt %s on run %s rejected", exc.attempt, exc.run_id)
                 continue
             cache.blpop("workbench:wake", timeout=1)
         except (RedisError, SQLAlchemyError):

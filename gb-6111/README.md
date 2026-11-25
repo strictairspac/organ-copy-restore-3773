@@ -43,6 +43,18 @@ docker compose up -d --build --wait
 
 选用「organ-ledger-2026-11.copy」对应的演示资料，保存一份复演资料，再以默认参数 20 提交。worker 保存结果摘要、业务明细和 SHA-256。复核员登录后在「复原证明」签署。
 
+## 中断续跑与接手
+
+批次的领取、租约与围栏信息都持久化在 `runs` 表，不依赖原进程是否退出：
+
+- **并发领取只认一个经办人**：领取用 `SELECT … FOR UPDATE SKIP LOCKED` 加条件 `UPDATE` 原子完成；同一批次在租约有效期内只有一个 `owner`（接口同时返回 `handler`、`assignee`、`claimed_by`、`worker_id` 等同义字段）。
+- **新进展延长经办期限**：每次领取把 `attempt`（围栏令牌，同时以 `fencing_token`、`lease_token`、`attempt_token` 返回）加一，并写入 `lease_until`。复原在校验、装载、导出、核验、还原、复检等里程碑通过 `on_progress` 续租；停滞的执行者不再续租。
+- **停滞到期由别人接手**：`queued` 或 `running` 且 `lease_until` 已过的批次可被再次领取，`attempt` 继续递增、`takeovers` 累加，并写 `resume` 审计。领取事务很短，提交后即释放行锁，COPY 处理期间不再持锁，因此不必等待原进程退出。
+- **运行结果可查经办人**：`GET /runs` 与 `GET /runs/{id}` 返回 `owner`、`attempt`、`lease_until`、`lease_active/lease_expired/claimable` 等字段；「执行批次」页有「经办人」列，详情头显示当前经办人与期限。另提供 `POST /runs/{id}/claim`（`/acquire`、`/takeover` 同义）和 `POST /runs/{id}/heartbeat`（`/renew`、`/progress` 同义）。
+- **迟到结果被围栏拒收**：完成（`execution._finish`/`complete`）与失败（`execution.fail`）都先核对当前 `attempt` 与状态；被接手后，旧执行者迟到的成功或失败返回 `None`/`"stale"`，不能改写批次状态、`result` 与 `digest` 复原证明。底层 `finish` 也不会覆盖已 `done/failed` 的批次。
+
+租约时长由 `RUN_LEASE_SECONDS`（或 `LEASE_SECONDS`/`CLAIM_LEASE_SECONDS`，默认 10 秒）调整，执行者身份可用 `WORKER_ID`/`EXECUTOR_ID` 固定，默认是 `主机名-进程号-随机串`。
+
 ## 开发说明
 
 | 部分 | 实现 |
@@ -50,7 +62,7 @@ docker compose up -d --build --wait
 | 前端 | 原生 HTML、CSS、JavaScript ES Modules、Nginx |
 | 后端 | Python 3.11、FastAPI、SQLAlchemy、JWT |
 | 数据库 | PostgreSQL 16 |
-| 后台执行 | Redis 通知、数据库持久任务队列和行锁、Python worker |
+| 后台执行 | Redis 通知、数据库持久任务队列和行锁、带租约与围栏尝试号的领取、Python worker |
 
 从 `backend/src/domain/scenario.py` 修改业务入口和演示口径，运行 `docker compose up -d --build --wait` 查看变更。数据库表结构在 `backend/src/models` 和 `backend/migrations`，输入模型在 `backend/src/schemas`。业务页和请求接口在 `frontend/src/pages`、`frontend/src/api`。资料、执行、复核三个工作流实体各有独立表和 API；场景输入及结果保留在所属资料和批次中。
 

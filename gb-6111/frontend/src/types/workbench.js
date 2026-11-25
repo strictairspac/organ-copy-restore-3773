@@ -1,6 +1,6 @@
 /**
  * @typedef {{id:number, code:string, title:string, description:string, payload:Object, created_by:string}} Case
- * @typedef {{id:number, case_id:number, case_title:string, status:string, parameter:number, result:Object|null}} Run
+ * @typedef {{id:number, case_id:number, case_title:string, status:string, parameter:number, result:Object|null, owner?:string|null, handler?:string|null, attempt?:number, fencing_token?:number, lease_until?:number|null, lease_active?:boolean, lease_expired?:boolean, claimable?:boolean, takeovers?:number}} Run
  * @typedef {{run_id:number, actor:string, note:string, created_at:number}} Review
  */
 
